@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Coding Plan 用量",
+    "description": "喺設定頁顯示 Qwen Token Plan、Z.ai GLM Coding Plan 同 MiniMax Coding Plan 嘅用量。"
+  }
+}

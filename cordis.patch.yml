@@ -1,0 +1,3 @@
+- insert:
+    - id: coding-plan-usage
+      name: '@local/dsh-coding-plan-usage'
