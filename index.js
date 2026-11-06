@@ -519,27 +519,80 @@ async function fetchZai(key) {
 // MiniMax Coding Plan (API key)
 // ---------------------------------------------------------------------------
 
-export function parseMinimax(json) {
-  const baseResp = asObject(json?.base_resp)
-  if (baseResp && baseResp.status_code !== undefined && baseResp.status_code !== 0) {
+// MiniMax plan tiers, inferred from the per-window prompt limit. GLOBAL counts
+// are prompts; CN counts are model calls (prompts × 15). Names match MiniMax's
+// own plan labels. A percent-based plan reports total_count 0 and yields no tier.
+const MM_GLOBAL_TIERS = { 100: 'Starter', 300: 'Plus', 1000: 'Max', 2000: 'Ultra' }
+const MM_CN_TIERS = { 600: 'Starter', 1500: 'Plus', 4500: 'Max' }
+const MM_CALLS_PER_PROMPT = 15
+
+export function inferMinimaxTier(totalCount, isCn) {
+  const n = finiteNumber(totalCount)
+  if (n === undefined || n <= 0) return undefined
+  const normalized = Math.round(n)
+  if (isCn) return MM_CN_TIERS[normalized]
+  if (MM_GLOBAL_TIERS[normalized]) return MM_GLOBAL_TIERS[normalized]
+  if (normalized % MM_CALLS_PER_PROMPT !== 0) return undefined
+  return MM_GLOBAL_TIERS[normalized / MM_CALLS_PER_PROMPT]
+}
+
+function normalizeMinimaxPlanName(value) {
+  const raw = typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : ''
+  if (!raw) return undefined
+  const withoutPrefix = raw.replace(/^minimax\s+coding\s+plan\b[:\-]?\s*/i, '').trim()
+  if (withoutPrefix) return withoutPrefix
+  return /coding\s+plan/i.test(raw) ? 'Coding Plan' : raw
+}
+
+export function parseMinimax(json, isCn = false) {
+  const data = asObject(json?.data) ?? json
+  const baseResp = asObject(data?.base_resp) ?? asObject(json?.base_resp)
+  if (baseResp && baseResp.status_code !== undefined && Number(baseResp.status_code) !== 0) {
     const code = Number(baseResp.status_code)
     throw new PlanError(code === 1004 || code === 1008 ? 'SIGN_IN_REQUIRED' : 'UPSTREAM_FAILED', `MiniMax ${baseResp.status_msg || 'error'}`)
   }
-  const remains = Array.isArray(json?.model_remains) ? json.model_remains : []
-  const general = remains.find((r) => r?.model_name === 'general') ?? remains[0] ?? {}
+  const remains = Array.isArray(data?.model_remains) ? data.model_remains : (Array.isArray(json?.model_remains) ? json.model_remains : [])
+  // Prefer an entry that actually carries a count limit; else the general model; else the first.
+  const general =
+    remains.find((r) => finiteNumber(r?.current_interval_total_count) > 0) ??
+    remains.find((r) => r?.model_name === 'general') ??
+    remains[0] ?? {}
   const intervalRemaining = finiteNumber(general.current_interval_remaining_percent)
   const weeklyRemaining = finiteNumber(general.current_weekly_remaining_percent)
-  const plan = json?.current_subscribe_title ?? json?.plan_name ?? json?.plan ?? 'Coding Plan'
+  const totalCount = finiteNumber(general.current_interval_total_count)
+  const weekTotalCount = finiteNumber(general.current_weekly_total_count)
+
+  // MiniMax quirk: `current_interval_usage_count` commonly holds the REMAINING
+  // count, not the used count. When a remaining percent is present, derive the
+  // used count from it for consistency; otherwise treat usage_count as remaining.
+  const usedFromPercent = (total, remainingPercent) => {
+    if (total === undefined || total <= 0 || remainingPercent === undefined) return undefined
+    return Math.max(0, Math.min(total, Math.round(total * (100 - remainingPercent) / 100)))
+  }
+  const sessionUsed = usedFromPercent(totalCount, intervalRemaining) ??
+    (totalCount !== undefined && totalCount > 0 ? Math.max(0, totalCount - (finiteNumber(general.current_interval_usage_count) ?? 0)) : finiteNumber(general.current_interval_usage_count))
+  const weekUsed = usedFromPercent(weekTotalCount, weeklyRemaining) ??
+    (weekTotalCount !== undefined && weekTotalCount > 0 ? Math.max(0, weekTotalCount - (finiteNumber(general.current_weekly_usage_count) ?? 0)) : finiteNumber(general.current_weekly_usage_count))
+
+  const explicitPlan = normalizeMinimaxPlanName(
+    data?.current_subscribe_title ?? data?.plan_name ?? data?.plan ?? data?.current_plan_title ?? data?.combo_title ??
+    json?.current_subscribe_title ?? json?.plan_name ?? json?.plan,
+  )
+  const tier = inferMinimaxTier(totalCount, isCn)
+  const plan = explicitPlan ?? (tier ? `Coding Plan ${tier}` : 'Coding Plan')
+
   return {
-    plan: String(plan),
+    plan,
+    tier,
+    region: isCn ? 'CN' : 'GLOBAL',
     sessionPercent: intervalRemaining !== undefined ? clampPercent(100 - intervalRemaining) : undefined,
     sessionResetAt: resetIso(general.end_time),
-    sessionTotal: finiteNumber(general.current_interval_total_count),
-    sessionUsed: finiteNumber(general.current_interval_usage_count),
+    sessionTotal: totalCount !== undefined && totalCount > 0 ? totalCount : undefined,
+    sessionUsed: totalCount !== undefined && totalCount > 0 ? sessionUsed : undefined,
     weekPercent: weeklyRemaining !== undefined ? clampPercent(100 - weeklyRemaining) : undefined,
     weekResetAt: resetIso(general.weekly_end_time),
-    weekTotal: finiteNumber(general.current_weekly_total_count),
-    weekUsed: finiteNumber(general.current_weekly_usage_count),
+    weekTotal: weekTotalCount !== undefined && weekTotalCount > 0 ? weekTotalCount : undefined,
+    weekUsed: weekTotalCount !== undefined && weekTotalCount > 0 ? weekUsed : undefined,
   }
 }
 
@@ -560,9 +613,10 @@ async function minimaxGet(url, key) {
 async function fetchMinimax(key) {
   let lastError
   for (const url of MINIMAX_URLS) {
+    const isCn = url.includes('minimaxi.com')
     try {
       const body = await minimaxGet(url, key)
-      const parsed = parseMinimax(body)
+      const parsed = parseMinimax(body, isCn)
       if (parsed.sessionPercent === undefined && parsed.weekPercent === undefined) {
         throw new PlanError('NO_USAGE', 'MiniMax returned no usage')
       }

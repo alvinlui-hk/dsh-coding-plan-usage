@@ -7,6 +7,7 @@ import {
   cookieHeaderFromList,
   findBrowser,
   hasQwenTicket,
+  inferMinimaxTier,
   loginProfileDir,
   normalizeCookie,
   parseMinimax,
@@ -67,8 +68,13 @@ const mm = parseMinimax({
 assert.equal(mm.sessionPercent, 0)
 assert.equal(mm.weekPercent, 0)
 assert.ok(typeof mm.sessionResetAt === 'string')
+// percent-based plan: no count, so no tier and no count display
+assert.equal(mm.plan, 'Coding Plan')
+assert.equal(mm.tier, undefined)
+assert.equal(mm.sessionTotal, undefined)
+assert.equal(mm.sessionUsed, undefined)
 
-// MiniMax with real counts
+// MiniMax count-based plan -> tier inferred, used derived from percent
 const mm2 = parseMinimax({
   model_remains: [{ model_name: 'general', current_interval_total_count: 1000, current_interval_usage_count: 250, current_interval_remaining_percent: 75, end_time: 1793959200000, current_weekly_remaining_percent: 60, weekly_end_time: 1794182400000 }],
   base_resp: { status_code: 0 },
@@ -77,6 +83,25 @@ assert.equal(mm2.sessionPercent, 25)
 assert.equal(mm2.weekPercent, 40)
 assert.equal(mm2.sessionUsed, 250)
 assert.equal(mm2.sessionTotal, 1000)
+assert.equal(mm2.tier, 'Max')
+assert.equal(mm2.plan, 'Coding Plan Max')
+
+// explicit plan title wins over inference
+const mm3 = parseMinimax({ current_subscribe_title: 'MiniMax Coding Plan: Ultra', model_remains: [{ model_name: 'general', current_interval_total_count: 2000, current_interval_remaining_percent: 50 }], base_resp: { status_code: 0 } })
+assert.equal(mm3.plan, 'Ultra')
+assert.equal(mm3.tier, 'Ultra')
+
+// tier inference table (GLOBAL prompts, CN model-calls, and the /15 fallback)
+assert.equal(inferMinimaxTier(100, false), 'Starter')
+assert.equal(inferMinimaxTier(300, false), 'Plus')
+assert.equal(inferMinimaxTier(1000, false), 'Max')
+assert.equal(inferMinimaxTier(2000, false), 'Ultra')
+assert.equal(inferMinimaxTier(15000, false), 'Max') // 15000/15 = 1000 -> Max
+assert.equal(inferMinimaxTier(600, true), 'Starter')
+assert.equal(inferMinimaxTier(1500, true), 'Plus')
+assert.equal(inferMinimaxTier(4500, true), 'Max')
+assert.equal(inferMinimaxTier(0, false), undefined)
+assert.equal(inferMinimaxTier(undefined, false), undefined)
 
 // MiniMax auth error
 assert.throws(() => parseMinimax({ base_resp: { status_code: 1004, status_msg: 'auth' } }), /auth/)
