@@ -15,7 +15,13 @@ This is an unofficial plugin. It is not affiliated with Alibaba/Qwen, Z.ai (Zhip
 
 ## Install
 
-From a DSH session, ask the agent to install this repository, or run:
+From npm (one-click, shows in the in-app Plugin Center):
+
+```text
+dsh plugin --profile desktop add @alvinlui-hk/dsh-coding-plan-usage
+```
+
+Or from a DSH session, ask the agent to install this repository:
 
 ```text
 dsh plugin --profile desktop add github:alvinlui-hk/dsh-coding-plan-usage

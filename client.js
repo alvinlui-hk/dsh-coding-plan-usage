@@ -1,5 +1,5 @@
 window.__ModuleLoader__.load({
-  id: '@local/dsh-coding-plan-usage',
+  id: '@alvinlui-hk/dsh-coding-plan-usage',
   factory(require) {
     const React = require('react')
     const h = React.createElement
