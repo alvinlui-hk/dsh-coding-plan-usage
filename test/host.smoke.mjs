@@ -8,6 +8,7 @@ const refs = { ZAI_API_KEY: 'zai-test-key', MINIMAX_API_KEY: 'mm-test-key' }
 const logs = []
 const ctx = {
   logger: { warn: (...a) => logs.push(a.map(String).join(' ')) },
+  get() { return undefined },
   webServer: { register: ({ path, handler }) => { routes.set(path, handler); return () => routes.delete(path) } },
   credentials: {
     readRecord: async (k) => records.get(k),
@@ -30,11 +31,11 @@ for (const p of ['/coding-plan/usage', '/coding-plan/login', '/coding-plan/cance
 const realFetch = globalThis.fetch
 function mockFetch(handler) { globalThis.fetch = handler }
 
-function req(method, url, body) {
-  return { method, url, headers: { host: '127.0.0.1:1' }, on: (ev, cb) => { if (ev === 'end') setImmediate(() => cb()) }, }
+function req(method, url) {
+  return { method, url, headers: { host: '127.0.0.1:1', origin: 'http://127.0.0.1:1' }, on: (ev, cb) => { if (ev === 'end') setImmediate(() => cb()) } }
 }
 function reqWithBody(method, url, bodyStr) {
-  const r = { method, url, headers: { host: '127.0.0.1:1' }, on: () => {} }
+  const r = { method, url, headers: { host: '127.0.0.1:1', origin: 'http://127.0.0.1:1' }, on: () => {} }
   // simulate body streaming
   setImmediate(() => {
     r.onData?.(Buffer.from(bodyStr))
@@ -60,7 +61,7 @@ mockFetch(async (url) => {
 })
 {
   const r = res()
-  await routes.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=zai&refresh=1', headers: { host: '127.0.0.1:1' } }, r)
+  await routes.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=zai&refresh=1', headers: { host: '127.0.0.1:1', origin: 'http://127.0.0.1:1' } }, r)
   const body = JSON.parse(r.out.body)
   assert.equal(body.ok, true)
   assert.equal(body.provider, 'zai')
@@ -78,7 +79,7 @@ mockFetch(async (url) => {
 })
 {
   const r = res()
-  await routes.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=minimax&refresh=1', headers: { host: '127.0.0.1:1' } }, r)
+  await routes.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=minimax&refresh=1', headers: { host: '127.0.0.1:1', origin: 'http://127.0.0.1:1' } }, r)
   const body = JSON.parse(r.out.body)
   assert.equal(body.usage.sessionPercent, 20)
   assert.equal(body.usage.weekPercent, 40)
@@ -89,7 +90,7 @@ mockFetch(async (url) => {
   const savedZai = refs.ZAI_API_KEY
   delete refs.ZAI_API_KEY
   const r = res()
-  await routes.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=zai&refresh=1', headers: { host: '127.0.0.1:1' } }, r)
+  await routes.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=zai&refresh=1', headers: { host: '127.0.0.1:1', origin: 'http://127.0.0.1:1' } }, r)
   const body = JSON.parse(r.out.body)
   assert.equal(body.configured, false)
   assert.equal(body.status, 'missing-key')
@@ -118,12 +119,85 @@ mockFetch(async (url) => {
   assert.equal(records.has('coding-plan-usage/zai-key'), false, 'sign-out did not delete')
 }
 
-// ---- origin rejection ----
+// ---- origin rejection on a composition without connection ----
 {
   const r = res()
   await routes.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=zai', headers: { host: '127.0.0.1:1', origin: 'https://evil.example' } }, r)
   assert.equal(r.out.status, 403)
 }
 
+// A request with no Origin is not treated as local. curl and another local
+// process must not start a login browser or delete a stored credential.
+{
+  const r = res()
+  await routes.get('/coding-plan/login')({ method: 'POST', url: '/coding-plan/login', headers: { host: '127.0.0.1:1' } }, r)
+  assert.equal(r.out.status, 403)
+  assert.equal(JSON.parse(r.out.body).ok, false)
+}
+
+// ---- current DSH: webServer admits before dispatch and passes the Peer ----
+{
+  const admitted = new Map()
+  const peer = { principal: { kind: 'owner' }, signal: { aborted: false } }
+  apply({
+    ...ctx,
+    webServer: {
+      register: ({ path, auth, handler }) => {
+        assert.equal(auth, 'required', path + ' must require admission')
+        admitted.set(path, (req, res) => handler(req, res, peer))
+        return () => admitted.delete(path)
+      },
+    },
+  })
+  const r = res()
+  await admitted.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=zai', headers: { host: 'attacker.example', origin: 'https://attacker.example' } }, r)
+  assert.equal(r.out.status, 200, 'an admitted Peer is the host decision')
+}
+
+// ---- installed 0.2.2 nightly: connection.requestRejection is the fence ----
+{
+  const guarded = new Map()
+  let admissions = 0
+  apply({
+    ...ctx,
+    get(name) {
+      if (name !== 'connection') return undefined
+      return {
+        requestRejection(request) {
+          return request.headers.origin === 'https://evil.example' ? 403 : undefined
+        },
+        admit() {
+          admissions += 1
+          return { peer: { principal: { kind: 'owner' } } }
+        },
+      }
+    },
+    webServer: {
+      register: ({ path, handler }) => {
+        guarded.set(path, handler)
+        return () => guarded.delete(path)
+      },
+    },
+  })
+  const rejected = res()
+  let bodyRead = false
+  await guarded.get('/coding-plan/sign-out')({
+    method: 'POST',
+    url: '/coding-plan/sign-out',
+    headers: { host: '127.0.0.1:1', origin: 'https://evil.example' },
+    on(event, callback) {
+      if (event === 'data') bodyRead = true
+      if (event === 'end') callback()
+    },
+  }, rejected)
+  assert.equal(rejected.out.status, 403)
+  assert.equal(bodyRead, false, 'a rejected request must not be read')
+
+  const allowed = res()
+  await guarded.get('/coding-plan/usage')({ method: 'GET', url: '/coding-plan/usage?provider=zai', headers: { host: '127.0.0.1:1' } }, allowed)
+  assert.equal(allowed.out.status, 200)
+  assert.equal(admissions, 1, 'an accepted requestRejection still resolves the Peer')
+}
+
 globalThis.fetch = realFetch
-console.log('PASS host smoke: routes, zai, minimax, missing-key, paste+signout, origin guard')
+console.log('PASS host smoke: routes, zai, minimax, missing-key, paste+signout, admission fence')

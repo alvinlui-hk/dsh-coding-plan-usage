@@ -37,7 +37,7 @@ Use `--profile web` instead of `--profile desktop` if that is the profile with t
 
 ## Requirements
 
-- DeepSeek Harness `0.2.1` or later, with a Web UI profile. Verified on `0.2.1-rc.2`, `0.2.1-rc.3`, and `0.2.2-rc.1`.
+- DeepSeek Harness `0.2.1` or later, with a Web UI profile. Verified on `0.2.1-rc.2`, `0.2.1-rc.3`, `0.2.2-rc.1`, and the `0.2.2` nightly. Routes require the signed-in browser session; see [SECURITY.md](SECURITY.md).
 - Z.ai: a GLM Coding Plan and its API key. MiniMax: a Coding Plan and its API key.
 - Qwen: a Qwen Cloud Token Plan, plus Microsoft Edge or Google Chrome for the sign-in window.
 

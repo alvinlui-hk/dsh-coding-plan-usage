@@ -1,6 +1,6 @@
 {
   "name": "@alvinlui-hk/dsh-coding-plan-usage",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "Show Qwen Token Plan, Z.ai GLM Coding Plan, and MiniMax Coding Plan usage in DeepSeek Harness.",
   "license": "MIT",

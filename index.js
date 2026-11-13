@@ -20,7 +20,7 @@ import { createServer } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 
-export const inject = ['webServer', 'credentials']
+export const inject = ['webServer', 'credentials', 'connection']
 
 // ---- credential addresses ----
 const QWEN_SESSION_KEY = 'coding-plan-usage/qwen-session'
@@ -824,40 +824,71 @@ export function apply(ctx) {
   }
 
   // ---- routing ----
+  // DSH 0.2.2-rc.2 and later admit a route before this handler runs: declaring
+  // auth: 'required' makes webServer ask connection, which pins Host to
+  // loopback, the bind address, or trustedHosts and requires the browser
+  // session cookie. Older hosts have no auth field, so the handler repeats
+  // that decision through connection.requestRejection. Only a composition
+  // with neither service falls back to the Origin check, and that check
+  // refuses a missing or opaque Origin instead of treating it as local.
   const originAllowed = (req) => {
-    const origin = req.headers.origin
-    if (typeof origin !== 'string' || origin.length === 0) return true
-    const host = req.headers.host
+    const origin = req.headers?.origin
+    if (typeof origin !== 'string' || origin.length === 0 || origin === 'null') return false
+    const host = req.headers?.host
     if (typeof host !== 'string' || host.length === 0) return false
     try {
-      return new URL(origin).host === host
+      const originUrl = new URL(origin)
+      if (originUrl.protocol !== 'http:' && originUrl.protocol !== 'https:') return false
+      return originUrl.host === host
     } catch {
       return false
     }
   }
 
+  const admitted = (req, res, peer) => {
+    if (peer !== undefined) return peer
+    const connection = ctx.get?.('connection') ?? ctx.connection
+    if (connection !== undefined && typeof connection.requestRejection === 'function') {
+      const status = connection.requestRejection(req)
+      if (status !== undefined) {
+        sendJson(res, status, { ok: false, error: status === 401 ? 'unauthorized' : 'forbidden' })
+        return undefined
+      }
+      // requestRejection and admit share one decision. A missing Peer here is
+      // not a second rejection; the request was already accepted.
+      return connection.admit?.(req)?.peer ?? null
+    }
+    if (!originAllowed(req)) {
+      sendJson(res, 403, { ok: false, error: 'forbidden origin' })
+      return undefined
+    }
+    return null
+  }
+
   const sendJson = (res, status, body) => {
-    const payload = JSON.stringify(body)
-    res.writeHead(status, {
-      'content-type': 'application/json; charset=utf-8',
-      'content-length': Buffer.byteLength(payload),
-      'cache-control': 'no-store',
-    })
-    res.end(payload)
+    try {
+      const payload = JSON.stringify(body)
+      res.writeHead(status, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-length': Buffer.byteLength(payload),
+        'cache-control': 'no-store',
+      })
+      res.end(payload)
+    } catch {
+      /* the socket closed while the response was being written */
+    }
   }
 
   const route = (routePath, handler) => {
-    const wrapped = async (req, res) => {
+    const wrapped = async (req, res, peer) => {
       try {
-        if (!originAllowed(req)) {
-          sendJson(res, 403, { ok: false, error: 'forbidden origin' })
-          return
-        }
+        const admittedPeer = admitted(req, res, peer)
+        if (admittedPeer === undefined) return
         if ((req.method ?? 'GET').toUpperCase() !== handler.method) {
           sendJson(res, 405, { ok: false, error: 'method not allowed' })
           return
         }
-        sendJson(res, 200, { ok: true, ...(await handler.run(req)) })
+        sendJson(res, 200, { ok: true, ...(await handler.run(req, admittedPeer)) })
       } catch (error) {
         ctx.logger.warn('coding-plan-usage: request handler failed')
         ctx.logger.warn(safeMessage(error))
@@ -866,7 +897,7 @@ export function apply(ctx) {
         sendJson(res, status, { ok: false, error: code })
       }
     }
-    return ctx.webServer.register({ kind: 'exact', path: routePath, handler: wrapped })
+    return ctx.webServer.register({ kind: 'exact', path: routePath, auth: 'required', handler: wrapped })
   }
 
   const parseJsonBody = async (req) => {

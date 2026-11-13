@@ -11,7 +11,11 @@ This plugin reads provider account data to show coding-plan usage. Handle it acc
 ## Network
 
 - Requests go only to the provider's own hosts: `home.qwencloud.com` / `cs-data.qwencloud.com`, `api.z.ai`, `api.minimax.io` / `api.minimaxi.com`.
-- Plugin routes are same-origin (`Origin` must match `Host`), method-checked, and `no-store`.
+- Plugin routes are exact paths and require the signed-in browser session.
+  - On DSH 0.2.2-rc.2 and later, each route declares `auth: 'required'`. WebServer admits the request before this plugin runs: `Host` must be loopback, the listener bind address, or a configured `trustedHosts` entry, and the browser session cookie must be present.
+  - On the current 0.2.2 nightly, the handler calls `connection.requestRejection` directly. That is the same Host and session-cookie fence.
+  - A composition with neither service rejects a missing, `null`, or cross-site `Origin`. An unmarked request is not treated as local, so another local process cannot start the Qwen login browser or delete a stored credential through these routes.
+- Responses are method-checked and `no-store`. A closed socket cannot turn a finished provider call into an unhandled exception.
 
 ## Qwen sign-in browser
 

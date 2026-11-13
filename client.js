@@ -380,7 +380,6 @@ window.__ModuleLoader__.load({
       const badge = state === null ? t('checking') : configured ? L.ready : L.noKey
       const tone = configured ? 'ok' : 'idle'
       const usageError = configured && state?.error ? errText(state.error) : null
-      const keyNote = configured && state?.keySource === 'plugin' ? null : null
 
       return h('section', { className: 'cpu_card', 'data-plugin': 'coding-plan-usage:' + provider },
         h('div', { className: 'cpu_header' },
@@ -409,7 +408,6 @@ window.__ModuleLoader__.load({
                 : h('button', { type: 'button', className: 'cpu_linkButton', onClick: () => setShowPaste(true) }, L.pasteToggle),
             ),
         localError ? h('p', { className: 'cpu_error' }, localError) : null,
-        keyNote,
         h('div', { className: 'cpu_actions' },
           configured
             ? h('button', { type: 'button', className: 'cpu_button cpu_secondary', disabled: busy, onClick: () => load(true) }, t('refresh'))
